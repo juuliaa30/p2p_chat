@@ -5,13 +5,11 @@ import sys
 from collections import deque
 from datetime import datetime
 
-DEFAULT_UDP_PORT = 2222
-DEFAULT_TCP_PORT = 5555
+UDP_PORT = 2222
+TCP_PORT = 5555
 
 local_name = None
 local_ip = None
-udp_port = DEFAULT_UDP_PORT
-tcp_port = DEFAULT_TCP_PORT
 udp_client = None
 history = deque()
 tcp_clients = {}
@@ -23,52 +21,18 @@ class MessageTypes:
     UserEntered = 3
     UserLeft = 4
 
-def is_port_available(port, protocol='tcp'):
-    sock_type = socket.SOCK_STREAM if protocol == 'tcp' else socket.SOCK_DGRAM
-    try:
-        with socket.socket(socket.AF_INET, sock_type) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(('127.0.0.1', port))
-            if protocol == 'tcp':
-                s.listen(1)
-            return True
-    except PermissionError:
-        return False
-    except OSError as e:
-        if e.errno == 10013:
-            print(f"Порт {port} заблокирован. Попробуйте другой порт.")
-        elif e.errno == 98:
-            print(f"Порт {port} уже используется.")
-        return False
-    except Exception:
-        return False
-
-async def get_port_from_user(port_type, default_port):
-    while True:
-        try:
-            port_str = input(f"Введите {port_type} порт (по умолчанию {default_port}): ").strip()
-            if not port_str:
-                return default_port
-            port = int(port_str)
-            if not is_port_available(port, port_type.lower()):
-                continue
-            return port
-        except ValueError:
-            print("Пожалуйста, введите корректный номер порта")
 
 async def main(args):
-    global local_name, local_ip, udp_client, is_running, udp_port, tcp_port
+    global local_name, local_ip, udp_client, is_running, UDP_PORT, TCP_PORT
     if len(args) < 3:
         print("Использование: python p2p_chat.py <имя> <ip>")
         return
     local_name = args[1]
     local_ip = args[2]
-    udp_port = await get_port_from_user('UDP', DEFAULT_UDP_PORT)
-    tcp_port = await get_port_from_user('TCP', DEFAULT_TCP_PORT)
-    print(f"\nЗапуск {local_name} на {local_ip} (UDP:{udp_port}, TCP:{tcp_port})")
+    print(f"\nЗапуск {local_name} на {local_ip} (UDP:{UDP_PORT}, TCP:{TCP_PORT})")
     udp_client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_client.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    udp_client.bind((local_ip, udp_port))
+    udp_client.bind((local_ip, UDP_PORT))
     try:
         tasks = [
             asyncio.create_task(send_udp_broadcasts()),
@@ -91,7 +55,7 @@ async def shutdown_cleanup():
     if udp_client and is_running:
         try:
             message = create_message(MessageTypes.UserLeft, f"{local_name} вышел из чата. | {datetime.now().strftime("%H:%M:%S")}")
-            broad_address = ('225.255.255.255', udp_port)
+            broad_address = ('225.255.255.255', UDP_PORT)
             udp_client.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             udp_client.sendto(message, broad_address)
         except:
@@ -112,7 +76,7 @@ async def shutdown_cleanup():
 async def send_udp_broadcasts():
     await asyncio.sleep(0.1)
     message = create_message(MessageTypes.UserEntered, local_name)
-    broad_address = ('255.255.255.255' , udp_port)
+    broad_address = ('255.255.255.255' , UDP_PORT)
     try:
         udp_client.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         udp_client.sendto(message, broad_address)
@@ -121,7 +85,7 @@ async def send_udp_broadcasts():
         print(f"Ошибка отправки широковещательного сообщения: {ex}")
 
 async def start_udp_listener():
-    print(f"Прослушивание UDP соединений на {local_ip}:{udp_port}")
+    print(f"Прослушивание UDP соединений на {local_ip}:{UDP_PORT}")
     while is_running:
         try:
             data, addr = await asyncio.get_event_loop().sock_recvfrom(udp_client, 1024)
@@ -141,10 +105,10 @@ async def start_udp_listener():
 async def start_tcp_listener():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((local_ip, tcp_port))
+    server.bind((local_ip, TCP_PORT))
     server.listen()
     server.setblocking(False)
-    print(f"Прослушивание TCP соединений на {local_ip}:{tcp_port}")
+    print(f"Прослушивание TCP соединений на {local_ip}:{TCP_PORT}")
     while is_running:
         try:
             client_socket, addr = await asyncio.get_event_loop().sock_accept(server)
@@ -231,7 +195,7 @@ async def receive_tcp_message(client_socket, addr):
                 await process_message(data, addr)
             except ConnectionResetError:
                 if not disconnected_msg_printed:
-                    print(f"Клиент {addr} принудительно отключен")
+                    print(f"Клиент {addr} отключился | {datetime.now().strftime("%H:%M:%S")}")
                     disconnected_msg_printed = True
                 break
             except asyncio.CancelledError:
@@ -278,7 +242,7 @@ async def process_message(data, addr):
         print(f"Ошибка обработки сообщения: {e}")
 
 async def create_tcp_connection(ip):
-    target_end_point = (ip, tcp_port)
+    target_end_point = (ip, TCP_PORT)
     if target_end_point[0] == local_ip:
         return
     if target_end_point in tcp_clients:
