@@ -154,14 +154,18 @@ def send_udp_broadcasts():
 
 def start_udp_listener():
     print(f"Прослушивание UDP соединений на {local_ip}:{udp_port}")
+    connected = False  # Флаг, указывающий, что мы уже подключились к кому-то
 
     while is_running:
         try:
             ready = select.select([udp_client], [], [], 1)
             if ready[0]:
                 data, addr = udp_client.recvfrom(1024)
-                print(f"Получено UDP от {addr} | {datetime.now().strftime('%H:%M:%S')}")
-                create_tcp_connection(addr[0])
+                ip = addr[0]
+                if ip != local_ip and not connected:
+                    print(f"Получено UDP от {addr} | {datetime.now().strftime('%H:%M:%S')}")
+                    if create_tcp_connection(ip):
+                        connected = True
         except Exception as ex:
             if not is_running:
                 break
@@ -181,12 +185,16 @@ def start_tcp_listener():
     while is_running:
         try:
             client_socket, addr = server.accept()
-            print(f"Принято соединение от {addr} | {datetime.now().strftime('%H:%M:%S')}")
+            local_socket_addr = client_socket.getsockname()
+            remote_socket_addr = client_socket.getpeername()
+
+            print(
+                f"Принято соединение: {local_socket_addr} <- {remote_socket_addr} | {datetime.now().strftime('%H:%M:%S')}")
 
             with lock:
-                tcp_clients[addr] = client_socket
+                tcp_clients[remote_socket_addr] = client_socket
 
-            threading.Thread(target=receive_tcp_message, args=(client_socket, addr)).start()
+            threading.Thread(target=receive_tcp_message, args=(client_socket, remote_socket_addr)).start()
         except socket.timeout:
             continue
         except Exception as e:
@@ -332,45 +340,53 @@ def process_message(data, addr):
 
 
 def create_tcp_connection(ip):
+    if ip == local_ip:
+        return False
+
     target_end_point = (ip, tcp_port)
 
-    if target_end_point[0] == local_ip:
-        return
-
     with lock:
-        if target_end_point in tcp_clients:
-            print(f"Уже подключен к {target_end_point}")
-            return
+        # Проверяем все существующие соединения, чтобы избежать дублирования
+        for addr in list(tcp_clients.keys()):
+            if addr[0] == ip:
+                print(f"Уже подключен к {addr}")
+                return False
 
     try:
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client_socket.settimeout(5)
+
+        # Привязываем сокет к локальному IP и случайному свободному порту
+        client_socket.bind((local_ip, 0))
 
         try:
             client_socket.connect(target_end_point)
         except Exception as e:
             print(f"Ошибка подключения к {target_end_point}: {e}")
             client_socket.close()
-            return
+            return False
+
+        local_port = client_socket.getsockname()[1]
+        print(f"Подключение от {local_ip}:{local_port} к {target_end_point} | {datetime.now().strftime('%H:%M:%S')}")
 
         with lock:
             tcp_clients[target_end_point] = client_socket
 
-        print(f"Подключено к {target_end_point} | {datetime.now().strftime('%H:%M:%S')}")
-
         send_chat_history(client_socket)
 
         message = create_message(MessageTypes.UserEntered,
-                                 f"{local_name} присоединился к чату. | {datetime.now().strftime('%H:%M:%S')}")
+                               f"{local_name} присоединился к чату. | {datetime.now().strftime('%H:%M:%S')}")
         client_socket.sendall(message)
 
         threading.Thread(target=receive_tcp_message, args=(client_socket, target_end_point)).start()
+        return True
     except Exception as e:
         print(f"Ошибка подключения к {target_end_point}: {e}")
         with lock:
             if target_end_point in tcp_clients:
                 del tcp_clients[target_end_point]
         client_socket.close()
+        return False
 
 
 def send_chat_history(client_socket):
