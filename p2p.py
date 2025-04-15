@@ -105,7 +105,7 @@ async def shutdown_cleanup():
         except:
             pass
 
-    for addr, sock in list(tcp_clients.items()):
+    for addr, (sock, _) in list(tcp_clients.items()):
         try:
             sock.close()
         except:
@@ -140,7 +140,7 @@ async def start_udp_listener():
             ip = addr[0]
             if ip != local_ip:
                 print(f"Получено UDP от {addr} | {datetime.now().strftime('%H:%M:%S')}")
-                await create_tcp_connection(ip)
+                await process_udp_message(data, ip)
         except asyncio.CancelledError:
             break
         except OSError as e:
@@ -151,6 +151,22 @@ async def start_udp_listener():
         except Exception as ex:
             print(f"Неожиданная ошибка в UDP прослушивании: {ex}")
             break
+
+
+async def process_udp_message(data, ip):
+    try:
+        message_type = data[0]
+        message_length = struct.unpack('!H', data[1:3])[0]
+        username = data[3:3 + message_length].decode('utf-8')
+
+        if message_type == MessageTypes.UserEntered:
+            for addr in list(tcp_clients.keys()):
+                if addr[0] == ip:
+                    return
+
+            await create_tcp_connection(ip, username)
+    except Exception as e:
+        print(f"Ошибка обработки UDP сообщения: {e}")
 
 
 async def start_tcp_listener():
@@ -164,26 +180,49 @@ async def start_tcp_listener():
     while is_running:
         try:
             client_socket, addr = await asyncio.get_event_loop().sock_accept(server)
-            local_socket_addr = client_socket.getsockname()
-            remote_socket_addr = client_socket.getpeername()
+            print(f"Принято соединение {addr} | {datetime.now().strftime('%H:%M:%S')}")
 
-            print(
-                f"Принято соединение {remote_socket_addr} | {datetime.now().strftime('%H:%M:%S')}")
+            try:
+                data = await asyncio.get_event_loop().sock_recv(client_socket, 1024)
+                message_type = data[0]
+                message_length = struct.unpack('!H', data[1:3])[0]
+                username = data[3:3 + message_length].decode('utf-8')
 
-            tcp_clients[remote_socket_addr] = client_socket
-            asyncio.create_task(receive_tcp_message(client_socket, remote_socket_addr))
+                if message_type != MessageTypes.UserEntered:
+                    client_socket.close()
+                    continue
+
+                tcp_clients[addr] = (client_socket, username)
+
+                await send_chat_history(client_socket)
+
+                new_user_msg = f"{username} присоединился к чату  | {datetime.now().strftime('%H:%M:%S')}"
+                print(new_user_msg)
+                history.append(f"{new_user_msg} | {datetime.now().strftime('%H:%M:%S')}")
+                message = create_message(MessageTypes.UserEntered, new_user_msg)
+
+                for client_addr, (sock, _) in list(tcp_clients.items()):
+                    if client_addr != addr:
+                        try:
+                            await asyncio.get_event_loop().sock_sendall(sock, message)
+                        except Exception as e:
+                            print(f"Ошибка отправки уведомления на {client_addr}: {e}")
+                            sock.close()
+                            if client_addr in tcp_clients:
+                                del tcp_clients[client_addr]
+
+                asyncio.create_task(receive_tcp_message(client_socket, addr, username))
+            except Exception as e:
+                print(f"Ошибка получения имени пользователя: {e}")
+                client_socket.close()
+
         except asyncio.CancelledError:
             break
-        except OSError as e:
-            if not is_running:
-                break
-            print(f"Ошибка TCP прослушивания: {e}")
-            break
         except Exception as e:
-            print(f"Неожиданная ошибка в TCP прослушивании: {e}")
+            if is_running:
+                print(f"Ошибка TCP прослушивания: {e}")
             break
     server.close()
-
 
 async def handle_user_input():
     loop = asyncio.get_event_loop()
@@ -197,17 +236,19 @@ async def handle_user_input():
             current_time = datetime.now().strftime("%H:%M:%S")
             formatted_message = f"{local_name} ({local_ip}): {message} | {current_time}"
             message_bytes = create_message(MessageTypes.Message, formatted_message)
-            history.append(formatted_message)
 
-            for addr, sock in list(tcp_clients.items()):
-                try:
-                    await loop.sock_sendall(sock, message_bytes)
-                except Exception as e:
-                    print(f"Ошибка отправки на {addr}: {e}")
-                    sock.close()
-                    if addr in tcp_clients:
-                        del tcp_clients[addr]
-                    await notify_user_left(addr)
+            if formatted_message not in history:
+                history.append(formatted_message)
+
+                for addr, (sock, _) in list(tcp_clients.items()):
+                    try:
+                        await loop.sock_sendall(sock, message_bytes)
+                    except Exception as e:
+                        print(f"Ошибка отправки на {addr}: {e}")
+                        sock.close()
+                        if addr in tcp_clients:
+                            del tcp_clients[addr]
+                        await notify_user_left(addr)
         except (KeyboardInterrupt, EOFError):
             await user_exit()
             return
@@ -223,7 +264,7 @@ async def user_exit():
     message = create_message(MessageTypes.UserLeft,
                              f"{local_name} вышел из чата. | {datetime.now().strftime('%H:%M:%S')}")
 
-    for addr, sock in list(tcp_clients.items()):
+    for addr, (sock, _) in list(tcp_clients.items()):
         try:
             if not sock._closed:
                 await asyncio.get_event_loop().sock_sendall(sock, message)
@@ -246,7 +287,7 @@ async def user_exit():
         udp_client = None
 
 
-async def receive_tcp_message(client_socket, addr):
+async def receive_tcp_message(client_socket, addr, username):
     loop = asyncio.get_event_loop()
     disconnected_msg_printed = False
 
@@ -256,19 +297,19 @@ async def receive_tcp_message(client_socket, addr):
                 data = await loop.sock_recv(client_socket, 1024)
                 if not data:
                     if not disconnected_msg_printed:
-                        print(f"Клиент {addr} отключился. | {datetime.now().strftime('%H:%M:%S')}")
+                        print(f"Клиент {username} ({addr[0]}) отключился. | {datetime.now().strftime('%H:%M:%S')}")
                         disconnected_msg_printed = True
                     break
-                await process_message(data, addr)
+                await process_message(data, addr, username)
             except ConnectionResetError:
                 if not disconnected_msg_printed:
+                    print(f"Клиент {username} ({addr[0]}) отключился. | {datetime.now().strftime('%H:%M:%S')}")
                     disconnected_msg_printed = True
                 break
             except asyncio.CancelledError:
                 break
             except Exception:
                 if not disconnected_msg_printed:
-                    print("Вы отключены")
                     disconnected_msg_printed = True
                 break
     finally:
@@ -277,17 +318,20 @@ async def receive_tcp_message(client_socket, addr):
                 del tcp_clients[addr]
             client_socket.close()
             if not disconnected_msg_printed:
-                await notify_user_left(addr)
+                await notify_user_left(addr, username)
         except Exception as e:
             if not disconnected_msg_printed:
                 print(f"Ошибка очистки для {addr}: {e}")
 
 
-async def process_message(data, addr):
+async def process_message(data, addr, username):
     try:
         message_type = data[0]
         message_length = struct.unpack('!H', data[1:3])[0]
-        content = data[3:3 + message_length].decode()
+        content = data[3:3 + message_length].decode('utf-8')
+
+        if addr[0] == local_ip:
+            return
 
         if message_type == MessageTypes.Message:
             if content == "END_OF_HISTORY":
@@ -295,7 +339,8 @@ async def process_message(data, addr):
             if content not in history:
                 print(content)
                 history.append(content)
-                for client_addr, client_socket in list(tcp_clients.items()):
+
+                for client_addr, (client_socket, _) in list(tcp_clients.items()):
                     if client_addr != addr:
                         try:
                             await asyncio.get_event_loop().sock_sendall(client_socket, data)
@@ -304,13 +349,17 @@ async def process_message(data, addr):
                             client_socket.close()
                             if client_addr in tcp_clients:
                                 del tcp_clients[client_addr]
+        elif message_type == MessageTypes.UserEntered:
+            pass
         elif message_type == MessageTypes.UserLeft:
-            print(content)
+            if content not in history:
+                print(content)
+                history.append(content)
     except Exception as e:
         print(f"Ошибка обработки сообщения: {e}")
 
 
-async def create_tcp_connection(ip):
+async def create_tcp_connection(ip, username):
     if ip == local_ip:
         return
 
@@ -318,11 +367,10 @@ async def create_tcp_connection(ip):
 
     for addr in list(tcp_clients.keys()):
         if addr[0] == ip:
-            print(f"Уже подключен к {addr}")
+            print(f"Уже подключен к {username} ({addr})")
             return
 
     try:
-
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client_socket.setblocking(False)
         client_socket.bind((local_ip, 0))
@@ -334,19 +382,18 @@ async def create_tcp_connection(ip):
             client_socket.close()
             return
 
-        local_port = client_socket.getsockname()[1]
-        print(f"Подключение к {target_end_point} | {datetime.now().strftime('%H:%M:%S')}")
+        print(f"{username} присоединился к чату | {datetime.now().strftime('%H:%M:%S')}")
 
-        tcp_clients[target_end_point] = client_socket
-        await send_chat_history(client_socket)
-
-        message = create_message(MessageTypes.UserEntered,
-                                 f"{local_name} присоединился к чату. | {datetime.now().strftime('%H:%M:%S')}")
+        enter_msg = local_name
+        message = create_message(MessageTypes.UserEntered, enter_msg)
         await asyncio.get_event_loop().sock_sendall(client_socket, message)
 
-        asyncio.create_task(receive_tcp_message(client_socket, target_end_point))
+        tcp_clients[target_end_point] = (client_socket, username)
+        await send_chat_history(client_socket)
+
+        asyncio.create_task(receive_tcp_message(client_socket, target_end_point, username))
     except Exception as e:
-        print(f"Ошибка подключения к {target_end_point}: {e}")
+        print(f"Ошибка подключения: {e}")
         if target_end_point in tcp_clients:
             del tcp_clients[target_end_point]
         client_socket.close()
@@ -354,10 +401,13 @@ async def create_tcp_connection(ip):
 
 async def send_chat_history(client_socket):
     try:
-        for msg in history:
-            message = create_message(MessageTypes.Message, msg)
-            await asyncio.get_event_loop().sock_sendall(client_socket, message)
-            await asyncio.sleep(0.01)
+        history_copy = list(history)
+        for msg in history_copy:
+
+            if "присоединился к чату" not in msg:
+                message = create_message(MessageTypes.Message, msg)
+                await asyncio.get_event_loop().sock_sendall(client_socket, message)
+                await asyncio.sleep(0.01)
 
         end_message = create_message(MessageTypes.Message, "END_OF_HISTORY")
         await asyncio.get_event_loop().sock_sendall(client_socket, end_message)
@@ -371,15 +421,18 @@ def create_message(message_type, content):
     return struct.pack('!B H', message_type, message_length) + content_encoded
 
 
-async def notify_user_left(addr):
+async def notify_user_left(addr, username=None):
     try:
         if addr[0] == local_ip:
             return
+
+        username = username or addr[0]
         user_left_message = create_message(
             MessageTypes.UserLeft,
-            f"Пользователь {addr[0]}:{addr[1]} вышел из чата. | {datetime.now().strftime('%H:%M:%S')}"
+            f"Пользователь {username} ({addr[0]}) вышел из чата. | {datetime.now().strftime('%H:%M:%S')}"
         )
-        for client_addr, client_socket in list(tcp_clients.items()):
+
+        for client_addr, (client_socket, _) in list(tcp_clients.items()):
             if client_addr != addr:
                 try:
                     await asyncio.get_event_loop().sock_sendall(client_socket, user_left_message)
