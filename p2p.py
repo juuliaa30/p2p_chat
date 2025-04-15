@@ -135,19 +135,19 @@ async def send_udp_broadcasts():
     try:
         udp_client.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         udp_client.sendto(message, broad_address)
-        print(f"Широковещательное сообщение отправлено на {broad_address}")
+        #print(f"Широковещательное сообщение отправлено на {broad_address}")
     except Exception as ex:
         print(f"Ошибка отправки широковещательного сообщения: {ex}")
 
 
 async def start_udp_listener():
-    print(f"Прослушивание UDP соединений на {local_ip}:{udp_port}")
+    #print(f"Прослушивание UDP соединений на {local_ip}:{udp_port}")
     while is_running:
         try:
             data, addr = await asyncio.get_event_loop().sock_recvfrom(udp_client, 1024)
             ip = addr[0]
             if ip != local_ip:
-                print(f"Получено UDP от {addr} | {datetime.now().strftime('%H:%M:%S')}")
+                #print(f"Получено UDP от {addr} | {datetime.now().strftime('%H:%M:%S')}")
                 await process_udp_message(data, ip)
         except asyncio.CancelledError:
             break
@@ -183,12 +183,12 @@ async def start_tcp_listener():
     server.bind((local_ip, tcp_port))
     server.listen()
     server.setblocking(False)
-    print(f"Прослушивание TCP соединений на {local_ip}:{tcp_port}")
+    #print(f"Прослушивание TCP соединений на {local_ip}:{tcp_port}")
 
     while is_running:
         try:
             client_socket, addr = await asyncio.get_event_loop().sock_accept(server)
-            print(f"Принято соединение {addr} | {datetime.now().strftime('%H:%M:%S')}")
+            #print(f"Принято соединение {addr} | {datetime.now().strftime('%H:%M:%S')}")
 
             try:
                 data = await asyncio.get_event_loop().sock_recv(client_socket, 1024)
