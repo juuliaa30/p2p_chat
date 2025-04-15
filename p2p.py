@@ -4,6 +4,7 @@ import struct
 import sys
 from collections import deque
 from datetime import datetime
+import ipaddress
 
 DEFAULT_UDP_PORT = 2222
 DEFAULT_TCP_PORT = 5555
@@ -66,7 +67,14 @@ async def main(args):
         print("Использование: python p2p_chat.py <имя> <ip>")
         return
     local_name = args[1]
-    local_ip = args[2]
+
+    try:
+        ipaddress.ip_address(args[2])
+        local_ip = args[2]
+    except ValueError:
+        print("Ошибка: Неверный формат IP-адреса")
+        return
+
     udp_port = await get_port_from_user('UDP', DEFAULT_UDP_PORT)
     tcp_port = await get_port_from_user('TCP', DEFAULT_TCP_PORT)
     print(f"\nЗапуск {local_name} на {local_ip} (UDP:{udp_port}, TCP:{tcp_port})")
