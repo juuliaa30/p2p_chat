@@ -224,11 +224,14 @@ async def start_tcp_listener():
             break
     server.close()
 
+
 async def handle_user_input():
     loop = asyncio.get_event_loop()
+
     while is_running:
         try:
             message = await loop.run_in_executor(None, input)
+
             if message.lower() == "/exit":
                 await user_exit()
                 return
@@ -249,6 +252,7 @@ async def handle_user_input():
                         if addr in tcp_clients:
                             del tcp_clients[addr]
                         await notify_user_left(addr)
+
         except (KeyboardInterrupt, EOFError):
             await user_exit()
             return
@@ -339,18 +343,6 @@ async def process_message(data, addr, username):
             if content not in history:
                 print(content)
                 history.append(content)
-
-                for client_addr, (client_socket, _) in list(tcp_clients.items()):
-                    if client_addr != addr:
-                        try:
-                            await asyncio.get_event_loop().sock_sendall(client_socket, data)
-                        except Exception as e:
-                            print(f"Ошибка пересылки сообщения на {client_addr}: {e}")
-                            client_socket.close()
-                            if client_addr in tcp_clients:
-                                del tcp_clients[client_addr]
-        elif message_type == MessageTypes.UserEntered:
-            pass
         elif message_type == MessageTypes.UserLeft:
             if content not in history:
                 print(content)
